@@ -1,5 +1,10 @@
 .env
 .env.local
+# backups and atomic-write temp files made by scripts/setup_env.py — these
+# hold the same credentials as .env and the `.env` rule above does not match
+# them (it matches the name exactly, not a prefix).
+.env.bak
+.env.*.tmp
 __pycache__/
 *.pyc
 .venv/

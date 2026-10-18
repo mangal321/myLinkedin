@@ -274,6 +274,18 @@ cp .env.example .env
 
 Then open `.env` and replace the placeholders with your real values.
 
+Or let a script do it, so the key never passes through a chat transcript or a
+shell history:
+
+```bash
+python3 scripts/setup_env.py
+```
+
+It prompts for each credential, masks the secret ones as you type, validates
+the shape of each value, and writes `.env` with `0600` permissions. It refuses
+to run if git is tracking a `.env` file, because that is how a live key ends
+up in a public branch.
+
 **Step 6.** Install two small Python packages:
 
 ```bash
