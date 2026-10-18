@@ -55,7 +55,7 @@ CREDENTIALS: list[tuple[str, str, bool, re.Pattern[str] | None, str]] = [
         "LINKEDIN_PLATFORM_ID",
         "LinkedIn platform id (from Publora > Channels > your LinkedIn channel)",
         False,
-        re.compile(r"^linkedin-[A-Za-z0-9]{4,}$"),
+        re.compile(r"^linkedin-[A-Za-z0-9_-]{4,}$"),
         "tells Publora which LinkedIn account to post as",
     ),
     (

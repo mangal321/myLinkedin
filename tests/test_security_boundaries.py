@@ -19,6 +19,15 @@ REVIEW_KEY = "-".join(("fake", "review", "key"))
 
 
 class EnvironmentTrust(unittest.TestCase):
+    # Both tests below patch `env_candidates` to return only the temporary
+    # file. Without it they are not hermetic: `load_env` always appends the
+    # repository-root `.env` to its candidates, so a developer who followed
+    # the README and wrote a real `.env` had their own PUBLORA_API_KEY and
+    # LINKEDIN_PLATFORM_ID loaded into the test, the publish backend resolved
+    # to "publora" instead of "manual", and both tests failed. The suite has
+    # to pass on a configured machine, because that is the machine that runs
+    # `scripts/selftest.py` and `scripts/check_config.py`.
+
     def test_project_env_cannot_select_a_poster_or_change_transport(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / ".env"
@@ -28,6 +37,7 @@ class EnvironmentTrust(unittest.TestCase):
                 "PUBLORA_API_KEY=project-key\n", encoding="utf-8")
             with mock.patch.dict(os.environ, {}, clear=True), \
                     mock.patch("dotenv.find_dotenv", return_value=str(path)), \
+                    mock.patch.object(_env, "env_candidates", return_value=[path]), \
                     mock.patch.object(_env, "_LOADED_PATHS", []):
                 _env.load_env(force=True)
                 self.assertEqual(os.environ.get("PUBLORA_API_KEY"), "project-key")
@@ -44,6 +54,7 @@ class EnvironmentTrust(unittest.TestCase):
                 "LINKEDIN_SKILLS_CUSTOM_POSTER": "trusted-poster",
                 "APIFY_TOKEN": "launch-token",
             }, clear=True), mock.patch("dotenv.find_dotenv", return_value=str(path)), \
+                    mock.patch.object(_env, "env_candidates", return_value=[path]), \
                     mock.patch.object(_env, "_LOADED_PATHS", []):
                 _env.load_env(force=True)
                 self.assertEqual(os.environ["APIFY_TOKEN"], "launch-token")
@@ -146,3 +157,35 @@ class DeletionStatusTrust(unittest.TestCase):
         client.delete_post(post_group_id="group", allow_live=True)
         client.get_post.assert_not_called()
         client._session.delete.assert_called_once()
+
+
+class ProbeVerdict(unittest.TestCase):
+    """A request that never completed is not a rejected credential.
+
+    The accounts phase used to print "key rejected (HTTP None)" for every
+    unreachable API, which sends a developer to rotate a key that was fine.
+    """
+
+    def test_unreachable_api_is_not_reported_as_a_rejected_key(self):
+        from scripts import selftest
+
+        level, message = selftest.verdict(None, OSError("boom"), "Publora", "the key")
+        self.assertEqual(level, selftest.WARN)
+        self.assertIn("could not reach", message)
+        self.assertNotIn("rejected", message)
+
+    def test_an_unauthorised_response_is_a_failure(self):
+        from scripts import selftest
+
+        for status in (401, 403):
+            with self.subTest(status=status):
+                level, message = selftest.verdict(status, None, "Publora", "the key")
+                self.assertEqual(level, selftest.FAIL)
+                self.assertIn("rejected", message)
+
+    def test_an_unexpected_status_is_a_failure(self):
+        from scripts import selftest
+
+        level, message = selftest.verdict(500, None, "Publora", "the key")
+        self.assertEqual(level, selftest.FAIL)
+        self.assertIn("500", message)

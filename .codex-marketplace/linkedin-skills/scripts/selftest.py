@@ -151,6 +151,23 @@ def probe(url, headers, timeout=30):
         return None, exc
 
 
+def verdict(status, detail, label, what):
+    """Classify a probe result. `None` means the request never completed.
+
+    A blocked network, a dead DNS name and a corporate proxy all land here.
+    Reporting those as "key rejected" sends people to rotate a perfectly good
+    credential, so they get a separate verdict. check_config.py already draws
+    this line for Publora; the accounts phase did not, and the two halves of
+    the same tool disagreed about the same key.
+    """
+    if status is None:
+        reason = type(detail).__name__ if isinstance(detail, BaseException) else "no response"
+        return WARN, f"could not reach the {label} API ({reason}); {what} may still be fine"
+    if status in (401, 403):
+        return FAIL, f"{what} rejected (HTTP {status})"
+    return FAIL, f"unexpected HTTP {status} from the {label} API"
+
+
 def phase_accounts(offline: bool) -> tuple[Phase, dict]:
     phase = Phase("Accounts")
     live = {"apify": False, "publora": False, "pixfaro": False}
@@ -184,7 +201,8 @@ def phase_accounts(offline: bool) -> tuple[Phase, dict]:
             phase.add(PASS, "Apify", f"{user.get('username')} on {plan}{headroom}")
             live["apify"] = True
         else:
-            phase.add(FAIL, "Apify", f"token rejected (HTTP {status}); reading falls back to paste")
+            level, message = verdict(status, r, "Apify", "the token")
+            phase.add(level, "Apify", message + "; reading falls back to paste")
 
     # --- Publora: writing. Needs both halves to auto-post.
     key, platform = os.getenv("PUBLORA_API_KEY"), os.getenv("LINKEDIN_PLATFORM_ID")
@@ -218,7 +236,8 @@ def phase_accounts(offline: bool) -> tuple[Phase, dict]:
                         phase.add(WARN, "  no LinkedIn connection",
                                   "connect one at app.publora.com, then re-run")
         else:
-            phase.add(FAIL, "Publora", f"key rejected (HTTP {status})")
+            level, message = verdict(status, _, "Publora", "the key")
+            phase.add(level, "Publora", message)
 
     # --- Pixfaro: images. /v1/models is public, so it proves nothing: use /v1/key.
     pix = os.getenv("PIXFARO_TOKEN") or os.getenv("PIXFARO_API_KEY")
@@ -244,7 +263,8 @@ def phase_accounts(offline: bool) -> tuple[Phase, dict]:
             if not body.get("email_verified", True):
                 phase.add(WARN, "  Pixfaro email", "unverified; generation stays blocked")
         else:
-            phase.add(FAIL, "Pixfaro", f"token rejected (HTTP {status}); keys are shown once")
+            level, message = verdict(status, r, "Pixfaro", "the token")
+            phase.add(level, "Pixfaro", message + "; keys are shown once")
     return phase, live
 
 
