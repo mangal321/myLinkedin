@@ -286,6 +286,23 @@ the shape of each value, and writes `.env` with `0600` permissions. It refuses
 to run if git is tracking a `.env` file, because that is how a live key ends
 up in a public branch.
 
+**Scheduling a week of posts in one command.** `publish_week.py` sits at the
+repo root and carries its post text inside the file, so there is nothing else
+to clone or configure:
+
+```bash
+python3 publish_week.py --dry-run      # print the schedule, send nothing
+python3 publish_week.py                 # schedule all of them
+python3 publish_week.py --print-posts   # print them for copy-paste instead
+```
+
+Each post goes out for its own slot, not for "now" - Publora stores a
+missing `scheduledTime` as a draft, so a draft is worse than a post when the
+plan is about timing. A slot that has already passed waits for next week, so
+running it twice cannot double-post. If the machine cannot reach
+`api.publora.com` at all, the script says so and points at `--print-posts`
+rather than reporting a bad credential.
+
 **Step 6.** Install two small Python packages:
 
 ```bash
