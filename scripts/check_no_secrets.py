@@ -31,7 +31,19 @@ TEMPLATE_NAMES = re.compile(r"(^|/)\.env\.(example|sample|template)$")
 # Real key shapes, with enough trailing entropy to exclude the placeholders that
 # appear all over the docs (`sk_your_api_key`, `apify_api_xxx`).
 SECRET_PATTERNS = [
-    ("Publora API key", re.compile(r"\bsk_[a-z0-9]{6,}[._][A-Za-z0-9]{32,}")),
+    ("Apify token", re.compile(r"\bapify_api_[A-Za-z0-9]{30,}")),
+    # Publora keys are `sk_<8 lowercase>_<8 hex>.<64 hex>` - note the dot in
+    # the middle. The old pattern wanted one separator followed by a run of
+    # alphanumerics with no dot, so it matched no real Publora key at all: the
+    # only key shape it could ever have caught was one that does not exist.
+    # Since #28 leaked a Publora key, the one pattern that most needed to work
+    # was the one that did not. This one accepts the dotted shape and the
+    # plain shape, and still refuses the placeholders in the docs
+    # (sk_your_key_here, sk_paste_your_key_here, sk_user_to_paste, sk_your_api_key),
+    # whose first segment is always under six characters.
+    ("Publora API key", re.compile(
+        r"\bsk_[A-Za-z0-9]{6,}(?:[._][A-Za-z0-9]{6,})+"
+        r"|\bsk_[A-Za-z0-9]{40,}\b")),
     ("Apify token", re.compile(r"\bapify_api_[A-Za-z0-9]{30,}")),
     ("Pixfaro token", re.compile(r"\bpf_live_[A-Za-z0-9]{24,}")),
     ("GitHub token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}")),
@@ -58,8 +70,33 @@ def tracked_files() -> list[str]:
     return [p for p in out.split("\0") if p]
 
 
+def skip_worktree_files() -> set[str]:
+    """Tracked files the index is told to ignore local edits for.
+
+    `git update-index --skip-worktree` is how a person keeps a filled Voice
+    Profile or Story Bank in the working tree without putting it in a commit:
+    git stops seeing the local edit, so `git add -A` stages the index version
+    (the blank template) and the personal material cannot be committed by
+    accident. It is a real protection, not a promise.
+
+    `git ls-files -v` tags each path with a status letter; 'S' is
+    skip-worktree, and assume-unchanged shows up as a lowercase 'h'.
+    """
+    out = subprocess.run(["git", "ls-files", "-v", "-z"], cwd=ROOT,
+                         capture_output=True, encoding="utf-8", check=True).stdout
+    protected: set[str] = set()
+    for entry in out.split("\0"):
+        if len(entry) < 3:
+            continue
+        tag, path = entry[0], entry[2:]
+        if tag in ("S", "h"):
+            protected.add(path)
+    return protected
+
+
 def main() -> int:
     problems: list[str] = []
+    protected = skip_worktree_files()
 
     for rel in tracked_files():
         if FORBIDDEN_NAMES.match(rel) and not TEMPLATE_NAMES.search(rel):
@@ -77,17 +114,30 @@ def main() -> int:
             # fingerprint, client names, salaries, the lot. The templates ship
             # blank and are meant to stay that way in git; fill yours and keep
             # the fill out of a commit.
+            #
+            # skip-worktree is the supported way to do exactly that: git
+            # ignores the local edit, so the filled copy stays on disk for the
+            # skills to read and cannot be staged by `git add -A`. A file
+            # protected that way is not a leak, so it is reported as protected
+            # rather than as a problem.
             try:
                 head = path.read_text(encoding="utf-8")[:4000]
             except (UnicodeDecodeError, OSError):
                 head = ""
-            if FILLED_MARKER.search(head):
+            if FILLED_MARKER.search(head) and rel not in protected:
                 problems.append(
                     f"{rel}: this template is marked `filled: yes` and is tracked. "
                     f"It holds your own material, not a credential, so nothing else "
-                    f"here would catch it. Restore the blank template with "
-                    f"`git checkout {rel}` and keep your filled copy outside the "
-                    f"repo, or add it to .gitignore.")
+                    f"here would catch it. Keep it out of commits with "
+                    f"`git update-index --skip-worktree {rel}`, or restore the blank "
+                    f"template with `git checkout {rel}` and keep the filled copy "
+                    f"outside the repo.")
+            elif FILLED_MARKER.search(head):
+                # Protected, so not a problem - but the credential patterns
+                # below still run on it. skip-worktree keeps a file out of a
+                # commit; it does not make a live key harmless.
+                print(f"OK: {rel} is filled but protected with --skip-worktree; "
+                      f"git will not commit it.")
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):

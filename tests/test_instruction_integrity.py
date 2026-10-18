@@ -337,10 +337,48 @@ class PersonalTemplates(unittest.TestCase):
     TEMPLATES = ("references/voice-profile.md", "references/story-bank.md")
     BLANK = re.compile(r"^\s*[-*]?\s*filled:\s*no\b", re.M | re.I)
 
+    def git_blob(self, name: str) -> str:
+        """What git would commit: the index copy."""
+        import subprocess
+
+        out = subprocess.run(["git", "show", f":{name}"], cwd=ROOT,
+                             capture_output=True, encoding="utf-8", check=True)
+        return out.stdout
+
+    def protected_templates(self) -> set[str]:
+        """Templates the index is told to ignore local edits for."""
+        from scripts.check_no_secrets import skip_worktree_files
+
+        return {n for n in self.TEMPLATES if n in skip_worktree_files()}
+
     def test_the_shipped_templates_are_blank(self):
+        """What travels must stay blank.
+
+        A filled template in the working tree is fine when the file is marked
+        --skip-worktree: git then stages the index copy (the blank template)
+        and the personal material cannot be committed by `git add -A`. The
+        rule is about what leaves the machine, not about what sits on it, and
+        a user who filled the file in the documented way should not see the
+        suite fail on the very file they filled in.
+        """
+        protected = self.protected_templates()
         for name in self.TEMPLATES:
+            committed = self.git_blob(name)
+            self.assertRegex(committed, self.BLANK,
+                             f"{name} is committed with content in it")
+            if name in protected:
+                continue
             text = (ROOT / name).read_text(encoding="utf-8")
             self.assertRegex(text, self.BLANK, f"{name} is tracked with content in it")
+
+    def test_a_protected_template_still_ships_blank_to_the_codex_package(self):
+        """Protection is local. The package must carry the blank copy."""
+        for name in self.TEMPLATES:
+            packaged = ROOT / ".codex-marketplace" / "linkedin-skills" / name
+            if not packaged.is_file():
+                continue
+            self.assertRegex(packaged.read_text(encoding="utf-8"), self.BLANK,
+                             f"the Codex package ships a filled {name}")
 
     def test_the_package_copies_are_blank_too(self):
         for name in self.TEMPLATES:

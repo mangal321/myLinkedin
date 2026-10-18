@@ -189,3 +189,81 @@ class ProbeVerdict(unittest.TestCase):
         level, message = selftest.verdict(500, None, "Publora", "the key")
         self.assertEqual(level, selftest.FAIL)
         self.assertIn("500", message)
+
+
+class CredentialPatterns(unittest.TestCase):
+    """The scanner has to match the shapes the credentials actually come in.
+
+    The Publora pattern used to want one separator followed by a run of
+    alphanumerics with no dot. Real Publora keys are
+    `sk_<8 lowercase>_<8 hex>.<64 hex>`, so the pattern matched no real key
+    at all - and #28 leaked a Publora key. The one shape that most needed to
+    be caught was the one the scanner was blind to.
+    """
+
+    def patterns(self):
+        from scripts import check_no_secrets
+
+        return dict(check_no_secrets.SECRET_PATTERNS)
+
+    #: The real Publora key shape, built from parts so the literal never
+    #: appears in a tracked file - check_no_secrets scans tracked files, and a
+    #: real-shaped key sitting in a test fixture would (rightly) fail the build.
+    PUBLORA_KEY_SHAPE = ".".join([
+        "sk_" + "review01",
+        "a1b2c3d4",
+        "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0",
+    ])
+
+    def test_the_real_publora_key_shape_is_caught(self):
+        pattern = self.patterns()["Publora API key"]
+        plain = "sk_" + "abcdefghijklmnopqrstuvwxyz" + "0123456789" + "ABCDEFGHIJ"
+        for key in (self.PUBLORA_KEY_SHAPE, plain):
+            with self.subTest(key=key[:20]):
+                self.assertTrue(pattern.search(key))
+
+    def test_the_documented_placeholders_are_not_caught(self):
+        pattern = self.patterns()["Publora API key"]
+        for placeholder in (
+            "sk_your_key_here",
+            "sk_paste_your_key_here",
+            "sk_user_to_paste",
+            "sk_your_api_key",
+            "sk_...",
+        ):
+            with self.subTest(placeholder=placeholder):
+                self.assertIsNone(pattern.search(placeholder))
+
+    def test_the_other_layers_still_match_their_own_shapes(self):
+        patterns = self.patterns()
+        self.assertTrue(patterns["Apify token"].search("apify_api_" + "a1b2c3d4" * 4))
+        self.assertTrue(patterns["Pixfaro token"].search("pf_live_" + "a1b2c3d4" * 3))
+        self.assertTrue(patterns["GitHub token"].search("ghp_" + "a1b2c3d4" * 4))
+
+    def test_skip_worktree_files_are_reported_as_protected(self):
+        """A filled template that git cannot commit is protected, not a leak."""
+        import subprocess
+        import tempfile
+
+        from scripts import check_no_secrets
+
+        with tempfile.TemporaryDirectory() as folder:
+            env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.t",
+                   "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.t",
+                   "PATH": os.environ.get("PATH", "")}
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=folder, env=env,
+                                      capture_output=True, text=True, check=True)
+
+            git("init", "-q", ".")
+            Path(folder, "plain.md").write_text("x", encoding="utf-8")
+            Path(folder, "personal.md").write_text("x", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-qm", "init")
+            git("update-index", "--skip-worktree", "personal.md")
+
+            out = subprocess.run(["git", "ls-files", "-v"], cwd=folder,
+                                 capture_output=True, encoding="utf-8", check=True).stdout
+            tags = {line[:1]: line[2:] for line in out.splitlines()}
+            self.assertEqual(tags.get("S"), "personal.md")
+            self.assertNotEqual(tags.get("H"), "personal.md")
